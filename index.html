@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV Height & Angle Trainer</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 20px; background: #f8f9fa; color: #1a1a1a; }
+    h1 { text-align: center; margin-bottom: 5px; font-size: 22px; }
+    .subtitle { text-align: center; color: #555; margin-bottom: 20px; font-size: 14px; }
+    .container { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1200px; margin: 0 auto; }
+    .canvas-box { background: #fff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); width: 100%; }
+    canvas { width: 100%; height: auto; background: #eef2f7; border-radius: 6px; border: 1px solid #ccc; display: block; }
+    .controls { background: #fff; padding: 18px; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); display: flex; flex-direction: column; gap: 12px; min-width: 300px; }
+    .control-group { }
+    label { display: flex; justify-content: space-between; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .val { color: #0066cc; font-weight: bold; }
+    input[type="range"] { width: 100%; cursor: pointer; }
+    select { width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #ccc; font-size: 14px; }
+    
+    .metrics { background: #f4f6f8; padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.6; }
+    .dori-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 5px; }
+    .dori-table td { padding: 4px 6px; border-bottom: 1px solid #e0e0e0; }
+    .dori-table .active { font-weight: bold; background: #e3f2fd; border-left: 3px solid #1976d2; }
+    .dori-table .good { color: #1b5e20; }
+    .dori-table .warn { color: #e65100; }
+    .dori-table .bad { color: #b71c1c; }
+    
+    .remarks { padding: 12px; border-radius: 6px; margin-top: 10px; font-size: 13px; line-height: 1.5; }
+    .remarks.ok { background: #e8f5e9; border: 1px solid #a5d6a7; color: #1b5e20; }
+    .remarks.warn { background: #fff3e0; border: 1px solid #ffb74d; color: #e65100; }
+    .remarks.error { background: #ffebee; border: 1px solid #ef9a9a; color: #b71c1c; }
+    
+    .legend { font-size: 11px; color: #666; margin-top: 6px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>📹 CCTV Height, Angle & Lens Trainer</h1>
+  <p class="subtitle">Move sliders to see real-time FOV cone, subject position, and DORI compliance</p>
+  <div class="container">
+    <div class="canvas-box">
+      <canvas id="sideCanvas" width="800" height="420"></canvas>
+      <p class="legend">🔵 Camera | 🟡 FOV Cone | 🟢/🔴 Target Subject | ⚪ Optical Axis</p>
+    </div>
+    
+    <div class="controls">
+      <div class="control-group">
+        <label>Mount Height <span class="val" id="hVal">2.5 m</span></label>
+        <input type="range" id="height" min="1" max="6" step="0.1" value="2.5">
+      </div>
+      <div class="control-group">
+        <label>Tilt Angle <span class="val" id="tVal">30°</span></label>
+        <input type="range" id="tilt" min="5" max="80" step="1" value="30">
+      </div>
+      <div class="control-group">
+        <label>Focal Length <span class="val" id="fVal">4.0 mm</span></label>
+        <input type="range" id="focal" min="2.8" max="12" step="0.1" value="4.0">
+      </div>
+      <div class="control-group">
+        <label>Target Distance <span class="val" id="dVal">5.0 m</span></label>
+        <input type="range" id="dist" min="1" max="20" step="0.5" value="5">
+      </div>
+      <div class="control-group">
+        <label>Subject Focus</label>
+        <select id="subject">
+          <option value="human">🚶 Human (1.8m tall)</option>
+          <option value="vehicle">🚗 Vehicle (4.0m wide)</option>
+        </select>
+      </div>
+      
+      <div class="metrics">
+        <strong>📊 DORI Thresholds (PPM = Pixels Per Meter)</strong>
+        <table class="dori-table" id="doriTable">
+          <tr id="row-obs"><td>Observation</td><td>≥ 12.5</td><td id="obs-desc">General activity tracking</td></tr>
+          <tr id="row-det"><td>Detection</td><td>≥ 25</td><td id="det-desc">Human/Object presence confirmed</td></tr>
+          <tr id="row-rec"><td>Recognition</td><td>≥ 63</td><td id="rec-desc">Known vs Unknown person</td></tr>
+          <tr id="row-id"><td>Identification</td><td>≥ 125</td><td id="id-desc">Facial match / License plate</td></tr>
+        </table>
+      </div>
+
+      <div class="remarks" id="remarksBox">
+        💡 <strong>Instructor Guidance:</strong><br>Adjust parameters to begin.
+      </div>
+    </div>
+  </div>
+
+<script>
+  const canvas = document.getElementById('sideCanvas');
+  const ctx = canvas.getContext('2d');
+  
+  // Constants (Standard 1080p 1/2.8" Sensor)
+  const SENSOR_H = 2.96; // mm vertical
+  const RES_W = 1920;
+  
+  const TARGET_H = { human: 1.8, vehicle: 1.6 }; // m
+  const TARGET_W = { human: 0.6, vehicle: 2.0 }; // m
+  const TARGET_COLOR = { human: '#2e7d32', vehicle: '#c62828' };
+  
+  function degToRad(d) { return d * Math.PI / 180; }
+  function radToDeg(r) { return r * 180 / Math.PI; }
+
+  function update() {
+    const H = parseFloat(document.getElementById('height').value);
+    const TILT = parseFloat(document.getElementById('tilt').value);
+    const F = parseFloat(document.getElementById('focal').value);
+    const D_TARGET = parseFloat(document.getElementById('dist').value);
+    const subject = document.getElementById('subject').value;
+
+    document.getElementById('hVal').textContent = H.toFixed(1) + ' m';
+    document.getElementById('tVal').textContent = TILT + '°';
+    document.getElementById('fVal').textContent = F.toFixed(1) + ' mm';
+    document.getElementById('dVal').textContent = D_TARGET.toFixed(1) + ' m';
+
+    // Optics Math
+    const vfovRad = 2 * Math.atan(SENSOR_H / (2 * F));
+    const vfovDeg = radToDeg(vfovRad);
+    const tiltRad = degToRad(TILT);
+    
+    // Ground Intersections (V-FOV)
+    const D_opt = H / Math.tan(tiltRad);
+    const D_top = H / Math.tan(tiltRad - vfovRad / 2);
+    const D_bot = H / Math.tan(tiltRad + vfovRad / 2);
+    
+    // Clamp infinity (if pointing near horizon)
+    const D_topSafe = D_top > 0 && isFinite(D_top) ? Math.min(D_top, 40) : 40;
+    
+    // Coverage & PPM
+    // Horizontal FOV calculation
+    const hfovRad = 2 * Math.atan((5.27) / (2 * F)); // 5.27mm sensor width
+    const coverageW = 2 * D_TARGET * Math.tan(hfovRad / 2);
+    const ppm = RES_W / coverageW;
+    
+    // Determine DORI Level
+    let level = 'None', detail = '', cls = 'bad', activeRow = '';
+    if(ppm >= 125) { level='Identification'; detail='✅ Can identify faces/plates'; cls='good'; activeRow='row-id'; }
+    else if(ppm >= 63) { level='Recognition'; detail='⚠️ Can recognize known person'; cls='warn'; activeRow='row-rec'; }
+    else if(ppm >= 25) { level='Detection'; detail='⚠️ Can detect human presence'; cls='warn'; activeRow='row-det'; }
+    else if(ppm >= 12.5) { level='Observation'; detail='⚠️ General movement/activity'; cls='warn'; activeRow='row-obs'; }
+    else { level='Below Observation'; detail='❌ Too low resolution'; cls='bad'; activeRow=''; }
+    
+    document.getElementById('obs-desc').innerHTML = ppm>=12.5 ? level==='Observation'?'📍 Active':'Met':'<span style="opacity:0.5">Unmet</span>';
+    document.getElementById('det-desc').innerHTML = ppm>=25 ? level==='Detection'?'📍 Active':'Met':'<span style="opacity:0.5">Unmet</span>';
+    document.getElementById('rec-desc').innerHTML = ppm>=63 ? level==='Recognition'?'📍 Active':'Met':'<span style="opacity:0.5">Unmet</span>';
+    document.getElementById('id-desc').innerHTML = ppm>=125 ? level==='Identification'?'📍 Active':'Met':'<span style="opacity:0.5">Unmet</span>';
+    
+    // Reset table styles
+    document.querySelectorAll('.dori-table tr').forEach(tr => tr.classList.remove('active'));
+    if(activeRow) document.getElementById(activeRow).classList.add('active');
+    
+    // Remarks Logic
+    const rBox = document.getElementById('remarksBox');
+    const inNearBlind = D_TARGET < D_bot;
+    const inFarBlind = D_TARGET > D_topSafe;
+    const inFOV = !inNearBlind && !inFarBlind;
+    
+    let remarkHTML = `<strong>Current Status: ${level}</strong><br>`;
+    if(inNearBlind) {
+      remarkHTML += `🔍 <strong>Near Blind Spot!</strong> Subject is too close to camera base. Increase Tilt or use wider lens.<br>`;
+      rBox.className = 'remarks error';
+    } else if(inFarBlind) {
+      remarkHTML += `🔍 <strong>Far Blind Spot!</strong> Subject is beyond upper FOV limit. Decrease Tilt or lower camera.<br>`;
+      rBox.className = 'remarks error';
+    } else {
+      remarkHTML += `✅ <strong>Sweet Spot Active.</strong> Subject is fully within V-FOV cone.<br>`;
+      rBox.className = 'remarks ok';
+    }
+    
+    if(level==='Identification') remarkHTML += `💡 Ideal for entrances, ATMs, or toll gates.`;
+    else if(level==='Recognition') remarkHTML += `💡 Suitable for reception areas or retail tracking.`;
+    else if(level==='Detection') remarkHTML += `💡 Good for wide-area intrusion alerts, but lacks detail.`;
+    else if(level==='Observation') remarkHTML += `💡 Best for hallway flow monitoring or parking lot overviews.`;
+    
+    rBox.innerHTML = `💡 <strong>Instructor Guidance:</strong><br>${remarkHTML}`;
+
+    draw(H, tiltRad, vfovRad, D_opt, D_bot, D_topSafe, D_TARGET, ppm, subject);
+  }
+
+  function draw(H, tilt, vfov, dOpt, dBot, dTop, dTarget, ppm, subj) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    const W = canvas.width;
+    const groundY = 380;
+    const camX = 60;
+    const camY = groundY - H * 55; // 55px per meter
+    const scaleX = 35; // px per meter
+    const maxDist = 20;
+    
+    // Background Grid
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 1;
+    for(let d=0; d<=maxDist; d+=2) {
+      let x = camX + d * scaleX;
+      ctx.beginPath(); ctx.moveTo(x, groundY); ctx.lineTo(x, groundY-300); ctx.stroke();
+      ctx.fillStyle = '#888'; ctx.font = '11px sans-serif'; ctx.fillText(d+'m', x-6, groundY+15);
+    }
+    ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.strokeStyle = '#555'; ctx.lineWidth = 2; ctx.stroke();
+    
+    // FOV Cone
+    const xTop = camX + dTop * scaleX;
+    const xBot = camX + dBot * scaleX;
+    const xOpt = camX + dOpt * scaleX;
+    
+    ctx.fillStyle = 'rgba(255, 235, 59, 0.15)';
+    ctx.strokeStyle = '#f57f17'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(camX, camY); ctx.lineTo(xBot, groundY); ctx.lineTo(xTop, groundY); ctx.closePath(); ctx.fill(); ctx.stroke();
+    
+    // Optical Axis
+    ctx.strokeStyle = '#1976d2'; ctx.setLineDash([5,4]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(camX, camY); ctx.lineTo(xOpt, groundY); ctx.stroke(); ctx.setLineDash([]);
+    
+    // FOV Labels
+    ctx.fillStyle = '#f57f17'; ctx.font = '10px sans-serif';
+    ctx.fillText('V-FOV', xOpt - 10, camY + (groundY-camY)/2);
+    ctx.fillStyle = '#1976d2';
+    ctx.fillText('Axis', xOpt + 5, groundY - 5);
+    
+    // Camera Blob
+    ctx.fillStyle = '#0055aa'; ctx.beginPath(); ctx.arc(camX, camY, 9, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#000'; ctx.font = '10px sans-serif'; ctx.fillText('CAM', camX - 11, camY - 12);
+    
+    // Mount Pole
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(camX, camY); ctx.lineTo(camX, groundY); ctx.stroke();
+    
+    // Target Subject (Moves with slider)
+    const tx = camX + dTarget * scaleX;
+    const tH = TARGET_H[subj];
+    const tW = TARGET_W[subj];
+    const tColor = TARGET_COLOR[subj];
+    const tStatus = ppm >= 25 ? tColor : '#757575'; // Grey if below detection
+    
+    // Draw Subject Icon
+    ctx.save();
+    ctx.translate(tx, groundY);
+    
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath(); ctx.ellipse(0, 0, tW*scaleX/1.5, 4, 0, 0, Math.PI*2); ctx.fill();
+    
+    if(subj === 'human') {
+      // Stick figure human
+      ctx.strokeStyle = tStatus; ctx.lineWidth = 3;
+      // Head
+      ctx.beginPath(); ctx.arc(0, -tH*45 - 10, 10, 0, Math.PI*2); ctx.stroke();
+      // Body
+      ctx.beginPath(); ctx.moveTo(0, -tH*45); ctx.lineTo(0, -20); ctx.stroke();
+      // Arms/Legs
+      ctx.beginPath(); ctx.moveTo(-12, -tH*45 + 15); ctx.lineTo(12, -tH*45 + 15); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(-10, 0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(10, 0); ctx.stroke();
+    } else {
+      // Box vehicle
+      ctx.strokeStyle = tStatus; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-tW*scaleX/1.5, 0);
+      ctx.lineTo(-tW*scaleX/1.5, -tH*30);
+      ctx.lineTo(tW*scaleX/1.5, -tH*30);
+      ctx.lineTo(tW*scaleX/1.5, 0);
+      ctx.closePath();
+      ctx.stroke();
+      // Wheels
+      ctx.fillStyle = '#333';
+      ctx.beginPath(); ctx.arc(-tW*scaleX/2.5, 0, 6, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(tW*scaleX/2.5, 0, 6, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    
+    // Target Distance Marker
+    ctx.fillStyle = '#000'; ctx.font = '11px sans-serif';
+    ctx.fillText(`${dTarget}m`, tx - 10, groundY + 30);
+    ctx.beginPath(); ctx.moveTo(tx, groundY-5); ctx.lineTo(tx, groundY+5); ctx.strokeStyle='#000'; ctx.lineWidth=2; ctx.stroke();
+    
+    // DORI PPM Display on Canvas
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillRect(W - 120, 10, 110, 40);
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(`PPM: ${ppm.toFixed(0)}`, W - 110, 30);
+    ctx.fillStyle = ppm>=25 ? '#1b5e20' : '#b71c1c';
+    ctx.fillText(`Status: ${ppm>=25?'Valid':'Low'}`, W - 110, 45);
+  }
+
+  ['height','tilt','focal','dist','subject'].forEach(id => {
+    document.getElementById(id).addEventListener('input', update);
+  });
+  
+  update();
+</script>
+</body>
+</html>
